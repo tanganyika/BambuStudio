@@ -2585,6 +2585,7 @@ unsigned int PresetBundle::sync_ams_list(std::vector<std::pair<DynamicPrintConfi
     std::vector<std::string> ams_filament_colors;
     std::vector<std::string> ams_filament_color_types;
     std::vector<AMSMapInfo>  ams_array_maps;
+    std::vector<AMSMapInfo>  ams_filament_trays; // tray of each ams_filament_presets entry
     ams_multi_color_filment.clear();
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": filament_ams_list size: %1%") % filament_ams_list.size();
     struct AmsInfo
@@ -2595,6 +2596,7 @@ unsigned int PresetBundle::sync_ams_list(std::vector<std::pair<DynamicPrintConfi
         std::string filament_color_type = "";
         std::string filament_preset = "";
         std::vector<std::string> mutli_filament_color;
+        AMSMapInfo               tray;
     };
     auto is_double_extruder = get_printer_extruder_count() == 2;
     std::vector<AmsInfo> ams_infos;
@@ -2684,11 +2686,13 @@ unsigned int PresetBundle::sync_ams_list(std::vector<std::pair<DynamicPrintConfi
                     prev = this->filament_presets[ams_filament_presets.size()];
                 if (!prev.empty()) {
                     ams_filament_presets.push_back(prev);
+                    ams_filament_trays.push_back(temp);
                     ams_filament_colors.push_back(filament_color);
                     ams_filament_color_types.push_back(filament_color_type);
                     ams_multi_color_filment.push_back(filament_multi_color);
                 } else {
                     ams_filament_presets.push_back("Generic PLA");//for unknow matieral
+                    ams_filament_trays.push_back(temp);
                     auto default_unknown_color = "#CECECE";
                     ams_filament_colors.push_back(default_unknown_color);
                     ams_filament_color_types.push_back("1");
@@ -2700,8 +2704,27 @@ unsigned int PresetBundle::sync_ams_list(std::vector<std::pair<DynamicPrintConfi
             }
             continue;
         }
+        // The Filament Manager remembers the exact preset last used with the spool bound to this
+        // tray. A user preset saved from a system one reaches the printer only as its parent's
+        // filament_id, so the lookups below would resolve it to that parent (or "Generic <type>").
+        // Prefer the remembered preset while it is still compatible and of the reported type.
+        if (const std::string spool_preset = ams.has("spool_preset") ? ams.opt_string("spool_preset", 0u) : std::string(); !spool_preset.empty()) {
+            Preset *remembered = filaments.find_preset(spool_preset, false);
+            if (remembered && remembered->is_compatible &&
+                remembered->config.opt_string("filament_type", 0u) == ams.opt_string("filament_type", 0u)) {
+                BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": tray %1% uses spool preset %2%") % tray_name % spool_preset;
+                remembered->is_visible = true;
+                ams_filament_presets.push_back(remembered->name);
+                ams_filament_trays.push_back(temp);
+                ams_filament_colors.push_back(filament_color);
+                ams_filament_color_types.push_back(filament_color_type);
+                ams_multi_color_filment.push_back(filament_multi_color);
+                continue;
+            }
+        }
         if (!filament_changed && this->filament_presets.size() > ams_filament_presets.size()) {
             ams_filament_presets.push_back(this->filament_presets[ams_filament_presets.size()]);
+            ams_filament_trays.push_back(temp);
             ams_filament_colors.push_back(filament_color);
             ams_filament_color_types.push_back(filament_color_type);
             ams_multi_color_filment.push_back(filament_multi_color);
@@ -2726,6 +2749,7 @@ unsigned int PresetBundle::sync_ams_list(std::vector<std::pair<DynamicPrintConfi
                 prev = this->filament_presets[ams_filament_presets.size()];
             if (!prev.empty()) {
                 ams_filament_presets.push_back(prev);
+                ams_filament_trays.push_back(temp);
                 ams_filament_colors.push_back(filament_color);
                 ams_filament_color_types.push_back(filament_color_type);
                 ams_multi_color_filment.push_back(filament_multi_color);
@@ -2785,6 +2809,7 @@ unsigned int PresetBundle::sync_ams_list(std::vector<std::pair<DynamicPrintConfi
                 preset_name_to_use = prev;
         }
         ams_filament_presets.push_back(preset_name_to_use);
+        ams_filament_trays.push_back(temp);
         ams_filament_colors.push_back(filament_color);
         ams_filament_color_types.push_back(filament_color_type);
         ams_multi_color_filment.push_back(filament_multi_color);
@@ -2892,10 +2917,13 @@ unsigned int PresetBundle::sync_ams_list(std::vector<std::pair<DynamicPrintConfi
         for (int i = 0; i < exist_colors.size(); i++) {
             exist_multi_color_filment[i] = {exist_colors[i]};
         }
+        // Tray each resulting project filament was taken from; empty for filaments left unmapped.
+        std::vector<AMSMapInfo> exist_trays(exist_colors.size());
         for (size_t i = 0; i < exist_colors.size(); i++) {
             if (maps.find(i) != maps.end()) {//mapping exist
                 auto valid_index = get_map_index(ams_array_maps, maps[i]);
                 if (valid_index >= 0 && valid_index < ams_filament_presets.size()) {
+                    exist_trays[i]            = ams_array_maps[valid_index];
                     exist_colors[i]           = ams_filament_colors[valid_index];
                     exist_color_types[i]      = ams_filament_color_types[valid_index];
                     exist_filament_presets[i] = ams_filament_presets[valid_index];
@@ -2914,6 +2942,7 @@ unsigned int PresetBundle::sync_ams_list(std::vector<std::pair<DynamicPrintConfi
                 ams_infos[i].filament_color_type  = ams_filament_color_types[i];
                 ams_infos[i].filament_preset = ams_filament_presets[i];
                 ams_infos[i].mutli_filament_color = ams_multi_color_filment[i];
+                ams_infos[i].tray                 = ams_array_maps[i];
                 if (!ams_infos[i].is_map) {
                     need_append_colors.emplace_back(ams_infos[i]);
                     ams_filament_colors[i]     = "";
@@ -2961,18 +2990,26 @@ unsigned int PresetBundle::sync_ams_list(std::vector<std::pair<DynamicPrintConfi
                 exist_colors.push_back(need_append_colors[i].filament_color);
                 exist_color_types.push_back(need_append_colors[i].filament_color_type);
                 exist_multi_color_filment.push_back(need_append_colors[i].mutli_filament_color);
+                exist_trays.push_back(need_append_colors[i].tray);
             }
         }
         filament_color->values = exist_colors;
         filament_color_type->values = exist_color_types;
         ams_multi_color_filment = exist_multi_color_filment;
         this->filament_presets = exist_filament_presets;
+        synced_filament_trays   = exist_trays;
+        synced_filament_presets = exist_filament_presets;
+        for (size_t i = 0; i < exist_trays.size(); ++i)
+            if (exist_trays[i].ams_id.empty())
+                synced_filament_presets[i].clear(); // not taken from a tray by this sync
         filament_map->values.resize(exist_filament_presets.size(), 1);
     }
     else {//overwrite;
         filament_color->values = ams_filament_colors;
         filament_color_type->values = ams_filament_color_types;
         this->filament_presets = ams_filament_presets;
+        synced_filament_trays   = ams_filament_trays;
+        synced_filament_presets = ams_filament_presets;
         filament_map->values.resize(ams_filament_colors.size(), 1);
 
         auto& print_config = this->prints.get_edited_preset().config;
